@@ -103,7 +103,7 @@ sudo apt install fleeting-plugin-selectel
 gpg --show-keys /etc/apt/keyrings/fleeting-plugin-selectel.gpg
 ```
 
-Отпечаток должен совпадать с ключом `keys/fleeting-plugin-selectel.asc` в этом репозитории.
+Отпечаток должен быть `22C2 8DC4 5FC9 9357 7C36  1723 EC61 D32C 251B 6F87`.
 
 В репозитории только последняя версия; предыдущие — в релизах.
 
