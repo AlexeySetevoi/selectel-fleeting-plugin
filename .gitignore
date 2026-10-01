@@ -1,0 +1,13 @@
+/*.env
+/*openrc*
+/*password*
+/.selectel-*
+/fleeting-plugin-selectel
+/smoketest
+/dist/
+*.test
+
+/.idea/
+/.claude/
+/.claude-flow/
+/coverage.out
