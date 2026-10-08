@@ -120,7 +120,10 @@ type Cloud interface {
 	// привязаны и созданы раньше before. Возвращает число удалённых.
 	CleanupOrphans(ctx context.Context, group string, before time.Time) (int, error)
 
-	LatestImageByName(ctx context.Context, name string) (string, error)
+	// LatestImageByName — самый свежий активный образ с этим именем, из
+	// которого можно создать диск в зоне zone: у Selectel образ лежит в сторах
+	// glance по зонам (поле stores), собранный из диска — только в его зоне.
+	LatestImageByName(ctx context.Context, name, zone string) (string, error)
 	// FlavorID принимает имя или ID флейвора.
 	FlavorID(ctx context.Context, nameOrID string) (string, error)
 	// CustomFlavor находит приватный флейвор плагина с такими vCPU/RAM или

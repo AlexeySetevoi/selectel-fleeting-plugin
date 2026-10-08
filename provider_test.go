@@ -32,8 +32,10 @@ type fakeCloud struct {
 	deleteErr map[string]error
 	listErr   error
 	images    map[string]string
-	flavors   map[string]string
-	external  string
+	// зоны, где образа по имени нет
+	imageMissingIn map[string]bool
+	flavors        map[string]string
+	external       string
 
 	orphans    int
 	orphansErr error
@@ -133,12 +135,12 @@ func (f *fakeCloud) CleanupOrphans(_ context.Context, _ string, before time.Time
 	return f.orphans, f.orphansErr
 }
 
-func (f *fakeCloud) LatestImageByName(_ context.Context, name string) (string, error) {
+func (f *fakeCloud) LatestImageByName(_ context.Context, name, zone string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	id, ok := f.images[name]
-	if !ok {
+	if !ok || f.imageMissingIn[zone] {
 		return "", fmt.Errorf("%w: image %s", selectelapi.ErrNotFound, name)
 	}
 	return id, nil
@@ -609,7 +611,9 @@ func TestIncreasePlacementFallback(t *testing.T) {
 	}
 }
 
-func TestIncreaseNoFallbackOnOtherErrors(t *testing.T) {
+// Ошибка, которая есть во всех размещениях (права, образ), перепробуется везде
+// и вернётся раннеру со всеми зонами.
+func TestIncreaseErrorInAllPlacements(t *testing.T) {
 	fake := newFake()
 	fake.create = func(selectelapi.CreateInstanceRequest) error {
 		return errors.New("forbidden")
@@ -622,8 +626,13 @@ func TestIncreaseNoFallbackOnOtherErrors(t *testing.T) {
 	if err == nil || succeeded != 0 {
 		t.Fatalf("Increase() = %d, %v, want an error", succeeded, err)
 	}
-	if len(fake.created) != 1 {
-		t.Fatalf("create attempts = %d, want 1", len(fake.created))
+	if len(fake.created) != 2 {
+		t.Fatalf("create attempts = %d, want 2", len(fake.created))
+	}
+	for _, zone := range []string{"ru-9a", "ru-9b"} {
+		if !strings.Contains(err.Error(), zone) {
+			t.Fatalf("error %q does not mention %s", err, zone)
+		}
 	}
 }
 
@@ -991,8 +1000,8 @@ func TestAsyncExhaustionMovesPlacementToTheEnd(t *testing.T) {
 	}
 }
 
-// Любая другая ошибка от смены зоны не лечится: порядок не меняется.
-func TestAsyncOtherErrorKeepsPlacementOrder(t *testing.T) {
+// Любой отказ сервера отправляет размещение в конец очереди.
+func TestAsyncAnyErrorMovesPlacementToTheEnd(t *testing.T) {
 	fake := newFake()
 	fake.opErr = func(selectelapi.CreateInstanceRequest) error {
 		return errors.New("server went to ERROR: image is broken")
@@ -1007,10 +1016,8 @@ func TestAsyncOtherErrorKeepsPlacementOrder(t *testing.T) {
 		g.watchers.Wait()
 	}
 
-	for i, req := range fake.created {
-		if req.AvailabilityZone != "ru-9a" {
-			t.Fatalf("request #%d went to %s, want the first placement", i+1, req.AvailabilityZone)
-		}
+	if fake.created[0].AvailabilityZone != "ru-9a" || fake.created[1].AvailabilityZone != "ru-9b" {
+		t.Fatalf("zones = %s, %s, want the failed placement moved to the end", fake.created[0].AvailabilityZone, fake.created[1].AvailabilityZone)
 	}
 }
 
@@ -1090,6 +1097,24 @@ func TestRandomCoversAllZones(t *testing.T) {
 	}
 	if len(seen) != 3 {
 		t.Fatalf("first placements seen = %v, want all 3 zones", seen)
+	}
+}
+
+// Образ по имени ищется в зоне каждого размещения; где его нет — следующая зона.
+func TestImageNameResolvedPerZone(t *testing.T) {
+	fake := newFake()
+	fake.images = map[string]string{"gitlab-fleeting-worker": "image-1"}
+	fake.imageMissingIn = map[string]bool{"ru-9a": true}
+
+	g := placementsGroup()
+	g.ImageID, g.ImageName = "", "gitlab-fleeting-worker"
+	initGroup(t, g, fake, provider.Settings{})
+
+	if succeeded, err := g.Increase(context.Background(), 1); err != nil || succeeded != 1 {
+		t.Fatalf("Increase() = %d, %v", succeeded, err)
+	}
+	if len(fake.created) != 1 || fake.created[0].AvailabilityZone != "ru-9b" || fake.created[0].ImageID != "image-1" {
+		t.Fatalf("created = %+v, want one server in ru-9b", fake.created)
 	}
 }
 

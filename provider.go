@@ -26,8 +26,7 @@ const (
 	// сколько запросов на создание шлём одновременно
 	createConcurrency = 5
 
-	// на сколько размещение уходит в конец очереди после того, как в нём не
-	// хватило ресурсов или зона не ответила
+	// на сколько размещение уходит в конец очереди после отказа
 	placementCooldown = 10 * time.Minute
 
 	// как часто Update ищет брошенные порты и адреса
@@ -315,22 +314,32 @@ func (g *InstanceGroup) Increase(ctx context.Context, delta int) (int, error) {
 	return succeeded, errors.Join(errs...)
 }
 
-// createInstance перебирает варианты размещения по порядку; к следующему
-// переходит только когда не хватило ресурсов или квоты, любая другая ошибка
-// от смены зоны не вылечится.
+// createInstance перебирает варианты размещения по порядку и переходит к
+// следующему при любой ошибке, включая отсутствие образа в зоне: авария зоны
+// приходит под разными кодами, по коду её от ошибки конфигурации не отличить.
+// Ошибка конфигурации повторится во всех вариантах и вернётся вместе с ними.
 func (g *InstanceGroup) createInstance(ctx context.Context) (selectelapi.CreateOperation, Placement, error) {
-	imageID := g.ImageID
-	if g.ImageName != "" {
-		var err error
-		if imageID, err = g.client.LatestImageByName(ctx, g.ImageName); err != nil {
-			return nil, Placement{}, fmt.Errorf("could not resolve image %q: %w", g.ImageName, err)
-		}
-	}
-
 	var errs []error
 
 	candidates := g.orderedPlacements()
 	for i, p := range candidates {
+		// образ по имени ищется в зоне размещения: в соседней его может не быть
+		imageID := g.ImageID
+		if g.ImageName != "" {
+			var err error
+			if imageID, err = g.client.LatestImageByName(ctx, g.ImageName, p.AvailabilityZone); err != nil {
+				errs = append(errs, fmt.Errorf("zone %s: could not resolve image %q: %w", p.AvailabilityZone, g.ImageName, err))
+				if ctx.Err() != nil {
+					break
+				}
+				g.deferPlacement(p)
+				if i < len(candidates)-1 {
+					g.log.Warn("no image in zone, trying next placement", "availability_zone", p.AvailabilityZone, "image_name", g.ImageName, "error", err)
+				}
+				continue
+			}
+		}
+
 		op, err := g.client.CreateInstance(ctx, selectelapi.CreateInstanceRequest{
 			// имя новое на каждую попытку, чтобы порт и сервер не путались
 			Name:              g.Name + "-" + randomSuffix(),
@@ -355,20 +364,28 @@ func (g *InstanceGroup) createInstance(ctx context.Context) (selectelapi.CreateO
 
 		errs = append(errs, fmt.Errorf("zone %s flavor %s: %w", p.AvailabilityZone, p.Flavor, err))
 
-		if i < len(candidates)-1 && placementFailure(err) {
-			g.log.Warn("placement failed, trying next placement", "availability_zone", p.AvailabilityZone, "flavor", p.Flavor, "error", err)
-			continue
+		// отменённый запрос раннера — не отказ размещения
+		if ctx.Err() != nil {
+			break
 		}
+		g.deferPlacement(p)
 
-		break
+		if i < len(candidates)-1 {
+			g.log.Warn("placement failed, trying next placement", "availability_zone", p.AvailabilityZone, "flavor", p.Flavor, "error", err)
+		}
 	}
 
 	return nil, Placement{}, fmt.Errorf("could not create instance: %w", errors.Join(errs...))
 }
 
-// placementFailure — ошибки, которые лечатся сменой зоны или флейвора.
-func placementFailure(err error) bool {
-	return errors.Is(err, selectelapi.ErrResourceExhausted) || errors.Is(err, selectelapi.ErrUnavailable)
+// deferPlacement отправляет отказавшее размещение в конец очереди на
+// placementCooldown.
+func (g *InstanceGroup) deferPlacement(p Placement) {
+	g.mu.Lock()
+	g.exhaustedUntil[p] = g.now().Add(placementCooldown)
+	g.mu.Unlock()
+
+	g.log.Warn("placement moved to the end of the list", "availability_zone", p.AvailabilityZone, "flavor", p.Flavor, "for", placementCooldown)
 }
 
 // orderedPlacements — размещения по кругу от стартового (см. PlacementStrategy),
@@ -425,13 +442,7 @@ func (g *InstanceGroup) watch(op selectelapi.CreateOperation, p Placement) {
 
 		g.log.Error("instance creation failed after the request was accepted", "id", op.InstanceID(), "availability_zone", p.AvailabilityZone, "flavor", p.Flavor, "error", err)
 
-		if placementFailure(err) {
-			g.mu.Lock()
-			g.exhaustedUntil[p] = g.now().Add(placementCooldown)
-			g.mu.Unlock()
-
-			g.log.Warn("placement moved to the end of the list", "availability_zone", p.AvailabilityZone, "flavor", p.Flavor, "for", placementCooldown)
-		}
+		g.deferPlacement(p)
 	}()
 }
 

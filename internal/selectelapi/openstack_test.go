@@ -718,7 +718,7 @@ func TestLatestImageByName(t *testing.T) {
 		image("mid", "2026-05-01T00:00:00Z"),
 	}}))
 
-	id, err := f.client(t).LatestImageByName(context.Background(), "Ubuntu 24.04 LTS 64-bit")
+	id, err := f.client(t).LatestImageByName(context.Background(), "Ubuntu 24.04 LTS 64-bit", "ru-9a")
 	if err != nil || id != "new" {
 		t.Fatalf("LatestImageByName() = %q, %v", id, err)
 	}
@@ -733,8 +733,32 @@ func TestLatestImageByNameNotFound(t *testing.T) {
 	f := newFakeOpenStack(t)
 	f.handle("GET /image/v2/images", respond(200, map[string]any{"images": []any{}}))
 
-	if _, err := f.client(t).LatestImageByName(context.Background(), "Nope"); !errors.Is(err, ErrNotFound) {
+	if _, err := f.client(t).LatestImageByName(context.Background(), "Nope", "ru-9a"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("LatestImageByName() = %v, want ErrNotFound", err)
+	}
+}
+
+// Собранный из диска образ лежит только в сторе своей зоны: в другой зоне
+// берётся свежий из тех, что там есть.
+func TestLatestImageByNameFiltersByStore(t *testing.T) {
+	image := func(id, created, stores string) map[string]any {
+		return map[string]any{"id": id, "name": "worker", "status": "active", "created_at": created, "stores": stores}
+	}
+
+	f := newFakeOpenStack(t)
+	f.handle("GET /image/v2/images", respond(200, map[string]any{"images": []any{
+		image("a-new", "2026-10-08T00:00:00Z", "ru-9a"),
+		image("b-old", "2026-09-01T00:00:00Z", "ru-9b"),
+		image("both", "2026-08-01T00:00:00Z", "ru-9a,ru-9b"),
+	}}))
+
+	for zone, want := range map[string]string{"ru-9a": "a-new", "ru-9b": "b-old"} {
+		if id, err := f.client(t).LatestImageByName(context.Background(), "worker", zone); err != nil || id != want {
+			t.Fatalf("LatestImageByName(%s) = %q, %v, want %s", zone, id, err, want)
+		}
+	}
+	if _, err := f.client(t).LatestImageByName(context.Background(), "worker", "ru-9c"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("LatestImageByName(ru-9c) = %v, want ErrNotFound", err)
 	}
 }
 

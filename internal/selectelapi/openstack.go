@@ -385,7 +385,7 @@ func (c *openStack) listGroupAddresses(ctx context.Context, group string) ([]flo
 	return floatingips.ExtractFloatingIPs(pages)
 }
 
-func (c *openStack) LatestImageByName(ctx context.Context, name string) (string, error) {
+func (c *openStack) LatestImageByName(ctx context.Context, name, zone string) (string, error) {
 	pages, err := images.List(c.image, images.ListOpts{Name: name, Status: images.ImageStatusActive}).AllPages(ctx)
 	if err != nil {
 		return "", mapError(err)
@@ -397,14 +397,32 @@ func (c *openStack) LatestImageByName(ctx context.Context, name string) (string,
 
 	var latest *images.Image
 	for i := range list {
+		if !inStore(list[i], zone) {
+			continue
+		}
 		if latest == nil || list[i].CreatedAt.After(latest.CreatedAt) {
 			latest = &list[i]
 		}
 	}
 	if latest == nil {
-		return "", fmt.Errorf("%w: no active image named %q", ErrNotFound, name)
+		return "", fmt.Errorf("%w: no active image named %q in zone %s", ErrNotFound, name, zone)
 	}
 	return latest.ID, nil
+}
+
+// inStore — лежит ли образ в сторе зоны. Без поля stores (glance с одним
+// стором) образ доступен везде.
+func inStore(image images.Image, zone string) bool {
+	stores, _ := image.Properties["stores"].(string)
+	if stores == "" {
+		return true
+	}
+	for _, store := range strings.Split(stores, ",") {
+		if strings.TrimSpace(store) == zone {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *openStack) listFlavors(ctx context.Context) ([]flavors.Flavor, error) {
