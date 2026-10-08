@@ -161,6 +161,12 @@ func (g *InstanceGroup) validate() error {
 		}
 	}
 
+	switch g.PlacementStrategy {
+	case "", strategyOrdered, strategyRoundRobin, strategyRandom:
+	default:
+		errs = append(errs, fmt.Errorf("invalid plugin config placement_strategy %q: must be one of %s, %s, %s", g.PlacementStrategy, strategyOrdered, strategyRoundRobin, strategyRandom))
+	}
+
 	if g.ImageID != "" && g.ImageName != "" {
 		errs = append(errs, errors.New("mutually exclusive plugin config provided: image_id, image_name"))
 	}
@@ -221,6 +227,9 @@ func (g *InstanceGroup) populate() error {
 	}
 	if g.VolumeType == "" {
 		g.VolumeType = defaultVolumeType
+	}
+	if g.PlacementStrategy == "" {
+		g.PlacementStrategy = strategyOrdered
 	}
 
 	if len(g.Placements) == 0 {

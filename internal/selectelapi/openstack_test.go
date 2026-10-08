@@ -864,6 +864,8 @@ func TestMapError(t *testing.T) {
 		{"volume quota", codeErr(413, `{"overLimit": {"message": "VolumeLimitExceeded"}}`), ErrResourceExhausted},
 		{"forbidden", codeErr(403, `{"forbidden": {"message": "Policy doesn't allow"}}`), nil},
 		{"bad request", codeErr(400, `{"badRequest": {}}`), nil},
+		{"internal error", codeErr(500, `{"computeFault": {}}`), ErrUnavailable},
+		{"service unavailable", codeErr(503, ``), ErrUnavailable},
 		{"transport", errors.New("connection refused"), nil},
 	}
 
@@ -875,7 +877,7 @@ func TestMapError(t *testing.T) {
 			if !errors.Is(got, tt.err) && !errors.As(got, &codeErr) {
 				t.Fatalf("mapError() lost the original error: %v", got)
 			}
-			for _, sentinel := range []error{ErrNotFound, ErrResourceExhausted} {
+			for _, sentinel := range []error{ErrNotFound, ErrResourceExhausted, ErrUnavailable} {
 				if errors.Is(got, sentinel) != errors.Is(sentinel, tt.want) {
 					t.Fatalf("mapError(%v) = %v, want sentinel %v", tt.err, got, tt.want)
 				}

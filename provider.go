@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"maps"
 	"math"
+	mrand "math/rand/v2"
 	"path"
 	"slices"
 	"sync"
@@ -26,7 +27,7 @@ const (
 	createConcurrency = 5
 
 	// на сколько размещение уходит в конец очереди после того, как в нём не
-	// хватило ресурсов
+	// хватило ресурсов или зона не ответила
 	placementCooldown = 10 * time.Minute
 
 	// как часто Update ищет брошенные порты и адреса
@@ -35,6 +36,16 @@ const (
 
 // подменяется в тестах
 var newCloud = selectelapi.NewOpenStack
+
+// Порядок, в котором пробуются размещения для нового сервера.
+const (
+	// ordered — всегда с первого из конфига, остальные только как фолбэк
+	strategyOrdered = "ordered"
+	// round_robin — каждый новый сервер начинает со следующего размещения
+	strategyRoundRobin = "round_robin"
+	// random — со случайного
+	strategyRandom = "random"
+)
 
 // Placement — один вариант размещения сервера, см. InstanceGroup.Placements.
 type Placement struct {
@@ -63,6 +74,11 @@ type InstanceGroup struct {
 	// или под флейвор не хватило ресурсов, пробуем следующий. Взаимоисключающе
 	// с AvailabilityZone/Flavor.
 	Placements []Placement `json:"placements"`
+
+	// PlacementStrategy — с какого размещения начинать: ordered (по
+	// умолчанию), round_robin или random. Фолбэк при отказе идёт по всем
+	// остальным размещениям по кругу.
+	PlacementStrategy string `json:"placement_strategy"`
 
 	// Cores и MemoryGB — произвольная конфигурация вместо Flavor: плагин
 	// заводит под неё приватный флейвор.
@@ -119,6 +135,8 @@ type InstanceGroup struct {
 	mu              sync.Mutex
 	exhaustedUntil  map[Placement]time.Time
 	nextOrphanCheck time.Time
+	// следующее стартовое размещение для round_robin
+	nextPlacement int
 }
 
 var _ provider.InstanceGroup = (*InstanceGroup)(nil)
@@ -337,8 +355,8 @@ func (g *InstanceGroup) createInstance(ctx context.Context) (selectelapi.CreateO
 
 		errs = append(errs, fmt.Errorf("zone %s flavor %s: %w", p.AvailabilityZone, p.Flavor, err))
 
-		if i < len(candidates)-1 && errors.Is(err, selectelapi.ErrResourceExhausted) {
-			g.log.Warn("not enough resources, trying next placement", "availability_zone", p.AvailabilityZone, "flavor", p.Flavor, "error", err)
+		if i < len(candidates)-1 && placementFailure(err) {
+			g.log.Warn("placement failed, trying next placement", "availability_zone", p.AvailabilityZone, "flavor", p.Flavor, "error", err)
 			continue
 		}
 
@@ -348,17 +366,34 @@ func (g *InstanceGroup) createInstance(ctx context.Context) (selectelapi.CreateO
 	return nil, Placement{}, fmt.Errorf("could not create instance: %w", errors.Join(errs...))
 }
 
-// orderedPlacements — размещения в порядке из конфига, но те, где недавно не
-// хватило ресурсов, идут последними: их пробуем, только если остальные отказали.
+// placementFailure — ошибки, которые лечатся сменой зоны или флейвора.
+func placementFailure(err error) bool {
+	return errors.Is(err, selectelapi.ErrResourceExhausted) || errors.Is(err, selectelapi.ErrUnavailable)
+}
+
+// orderedPlacements — размещения по кругу от стартового (см. PlacementStrategy),
+// но те, что недавно отказали, идут последними: их пробуем, только если
+// остальные отказали.
 func (g *InstanceGroup) orderedPlacements() []Placement {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
 	now := g.now()
+	n := len(g.placements)
 
-	ordered := make([]Placement, 0, len(g.placements))
+	start := 0
+	switch g.PlacementStrategy {
+	case strategyRoundRobin:
+		start = g.nextPlacement % n
+		g.nextPlacement = (start + 1) % n
+	case strategyRandom:
+		start = mrand.IntN(n)
+	}
+
+	ordered := make([]Placement, 0, n)
 	var exhausted []Placement
-	for _, p := range g.placements {
+	for i := range n {
+		p := g.placements[(start+i)%n]
 		if until, ok := g.exhaustedUntil[p]; ok && now.Before(until) {
 			exhausted = append(exhausted, p)
 			continue
@@ -390,7 +425,7 @@ func (g *InstanceGroup) watch(op selectelapi.CreateOperation, p Placement) {
 
 		g.log.Error("instance creation failed after the request was accepted", "id", op.InstanceID(), "availability_zone", p.AvailabilityZone, "flavor", p.Flavor, "error", err)
 
-		if errors.Is(err, selectelapi.ErrResourceExhausted) {
+		if placementFailure(err) {
 			g.mu.Lock()
 			g.exhaustedUntil[p] = g.now().Add(placementCooldown)
 			g.mu.Unlock()

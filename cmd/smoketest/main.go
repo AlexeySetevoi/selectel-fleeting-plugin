@@ -56,6 +56,7 @@ func run() int {
 	zone := flag.String("availability-zone", "", "availability zone, e.g. ru-9a")
 	flavor := flag.String("flavor", "", "flavor name or id, e.g. SL1.1-2048")
 	placements := flag.String("placements", "", "comma separated zone[:flavor] fallback list, instead of -availability-zone/-flavor")
+	placementStrategy := flag.String("placement-strategy", "", "ordered (default), round_robin or random")
 	cores := flag.Int("cores", 0, "vCPU count for a custom flavor, instead of -flavor")
 	memoryGB := flag.Float64("memory-gb", 0, "RAM for a custom flavor, GB")
 	imageID := flag.String("image-id", "", "image id")
@@ -96,22 +97,23 @@ func run() int {
 	})
 
 	g := &selectel.InstanceGroup{
-		Name:             *name,
-		PasswordFile:     *passwordFile,
-		AvailabilityZone: *zone,
-		Flavor:           *flavor,
-		Placements:       parsePlacements(*placements),
-		Cores:            *cores,
-		MemoryGB:         *memoryGB,
-		ImageID:          *imageID,
-		ImageName:        *imageName,
-		VolumeType:       *volumeType,
-		DiskSizeGB:       *diskSizeGB,
-		NetworkID:        *networkID,
-		SubnetID:         *subnetID,
-		FloatingIP:       *floatingIP,
-		Preemptible:      *preemptible,
-		UserDataFile:     *userDataFile,
+		Name:              *name,
+		PasswordFile:      *passwordFile,
+		AvailabilityZone:  *zone,
+		Flavor:            *flavor,
+		Placements:        parsePlacements(*placements),
+		PlacementStrategy: *placementStrategy,
+		Cores:             *cores,
+		MemoryGB:          *memoryGB,
+		ImageID:           *imageID,
+		ImageName:         *imageName,
+		VolumeType:        *volumeType,
+		DiskSizeGB:        *diskSizeGB,
+		NetworkID:         *networkID,
+		SubnetID:          *subnetID,
+		FloatingIP:        *floatingIP,
+		Preemptible:       *preemptible,
+		UserDataFile:      *userDataFile,
 	}
 	if *securityGroupIDs != "" {
 		g.SecurityGroupIDs = strings.Split(*securityGroupIDs, ",")

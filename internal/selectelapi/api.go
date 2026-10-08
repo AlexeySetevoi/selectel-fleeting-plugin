@@ -14,6 +14,9 @@ var (
 	ErrNotFound = errors.New("not found")
 	// ErrResourceExhausted — не хватило квоты или ресурсов пула/зоны.
 	ErrResourceExhausted = errors.New("resource exhausted")
+	// ErrUnavailable — облако ответило 5xx: так выглядит авария зоны, в
+	// другой зоне запрос может пройти.
+	ErrUnavailable = errors.New("unavailable")
 )
 
 // Статусы сервера, как их отдаёт Nova (плюс EXPIRED — вытесненный

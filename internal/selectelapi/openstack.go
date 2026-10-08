@@ -520,6 +520,8 @@ func mapError(err error) error {
 		return fmt.Errorf("%w: %w", ErrNotFound, err)
 	case quotaRegexp.Match(codeErr.Body):
 		return fmt.Errorf("%w: %w", ErrResourceExhausted, err)
+	case codeErr.Actual >= http.StatusInternalServerError:
+		return fmt.Errorf("%w: %w", ErrUnavailable, err)
 	default:
 		return err
 	}

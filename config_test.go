@@ -92,6 +92,12 @@ func TestValidate(t *testing.T) {
 			wantErr: "placements[0].flavor, cores/memory_gb",
 		},
 		{
+			name:    "bad placement strategy",
+			mutate:  func(g *InstanceGroup) { g.PlacementStrategy = "round-robin" },
+			wantErr: "placement_strategy",
+		},
+		{name: "round robin", mutate: func(g *InstanceGroup) { g.PlacementStrategy = strategyRoundRobin }},
+		{
 			name:    "both user data",
 			mutate:  func(g *InstanceGroup) { g.UserData, g.UserDataFile = "x", "/tmp/x" },
 			wantErr: "user_data, user_data_file",

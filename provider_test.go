@@ -627,6 +627,26 @@ func TestIncreaseNoFallbackOnOtherErrors(t *testing.T) {
 	}
 }
 
+// Авария зоны приходит как 5xx: в другой зоне запрос пройдёт.
+func TestIncreaseFallbackOnUnavailableZone(t *testing.T) {
+	fake := newFake()
+	fake.create = func(req selectelapi.CreateInstanceRequest) error {
+		if req.AvailabilityZone == "ru-9a" {
+			return fmt.Errorf("%w: 503 Service Unavailable", selectelapi.ErrUnavailable)
+		}
+		return nil
+	}
+	g := placementsGroup()
+	initGroup(t, g, fake, provider.Settings{})
+
+	if succeeded, err := g.Increase(context.Background(), 1); err != nil || succeeded != 1 {
+		t.Fatalf("Increase() = %d, %v", succeeded, err)
+	}
+	if len(fake.created) != 2 || fake.created[1].AvailabilityZone != "ru-9b" {
+		t.Fatalf("create attempts = %+v, want a fallback to ru-9b", fake.created)
+	}
+}
+
 func TestIncreasePartialSuccess(t *testing.T) {
 	var calls int
 	fake := newFake()
@@ -991,6 +1011,85 @@ func TestAsyncOtherErrorKeepsPlacementOrder(t *testing.T) {
 		if req.AvailabilityZone != "ru-9a" {
 			t.Fatalf("request #%d went to %s, want the first placement", i+1, req.AvailabilityZone)
 		}
+	}
+}
+
+func threeZoneGroup(strategy string) *InstanceGroup {
+	g := validGroup()
+	g.AvailabilityZone, g.Flavor = "", ""
+	g.Placements = []Placement{
+		{AvailabilityZone: "ru-9a", Flavor: "SL1.2-4096"},
+		{AvailabilityZone: "ru-9b", Flavor: "SL1.2-4096"},
+		{AvailabilityZone: "ru-9c", Flavor: "SL1.2-4096"},
+	}
+	g.PlacementStrategy = strategy
+	return g
+}
+
+// round_robin раскладывает серверы по зонам по очереди.
+func TestRoundRobinSpreadsAcrossZones(t *testing.T) {
+	fake := newFake()
+	g := threeZoneGroup(strategyRoundRobin)
+	initGroup(t, g, fake, provider.Settings{})
+
+	if succeeded, err := g.Increase(context.Background(), 6); err != nil || succeeded != 6 {
+		t.Fatalf("Increase() = %d, %v", succeeded, err)
+	}
+
+	perZone := map[string]int{}
+	for _, req := range fake.created {
+		perZone[req.AvailabilityZone]++
+	}
+	for _, zone := range []string{"ru-9a", "ru-9b", "ru-9c"} {
+		if perZone[zone] != 2 {
+			t.Fatalf("servers per zone = %v, want 2 in each", perZone)
+		}
+	}
+}
+
+// Отказавшая зона уходит в конец, round_robin крутится по живым, а запрос,
+// попавший на мёртвую зону, сразу уходит в следующую.
+func TestRoundRobinSkipsFailedZone(t *testing.T) {
+	fake := newFake()
+	fake.create = func(req selectelapi.CreateInstanceRequest) error {
+		if req.AvailabilityZone == "ru-9b" {
+			return fmt.Errorf("%w: 503 Service Unavailable", selectelapi.ErrUnavailable)
+		}
+		return nil
+	}
+	g := threeZoneGroup(strategyRoundRobin)
+	initGroup(t, g, fake, provider.Settings{})
+
+	var zones []string
+	for range 4 {
+		if succeeded, err := g.Increase(context.Background(), 1); err != nil || succeeded != 1 {
+			t.Fatalf("Increase() = %d, %v", succeeded, err)
+		}
+		zones = append(zones, fake.created[len(fake.created)-1].AvailabilityZone)
+	}
+
+	want := []string{"ru-9a", "ru-9c", "ru-9c", "ru-9a"}
+	if strings.Join(zones, ",") != strings.Join(want, ",") {
+		t.Fatalf("zones = %v, want %v", zones, want)
+	}
+}
+
+// random начинает с любой зоны, фолбэк всё равно обходит все.
+func TestRandomCoversAllZones(t *testing.T) {
+	fake := newFake()
+	g := threeZoneGroup(strategyRandom)
+	initGroup(t, g, fake, provider.Settings{})
+
+	seen := map[string]bool{}
+	for range 200 {
+		order := g.orderedPlacements()
+		if len(order) != 3 {
+			t.Fatalf("placements = %v, want all 3", order)
+		}
+		seen[order[0].AvailabilityZone] = true
+	}
+	if len(seen) != 3 {
+		t.Fatalf("first placements seen = %v, want all 3 zones", seen)
 	}
 }
 
