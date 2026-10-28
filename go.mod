@@ -1,6 +1,6 @@
 module github.com/AlexeySetevoi/selectel-fleeting-plugin
 
-go 1.26.8
+go 1.26.10
 
 require (
 	github.com/BurntSushi/toml v1.6.0
@@ -37,7 +37,7 @@ require (
 	github.com/oklog/run v1.2.0 // indirect
 	github.com/tidwall/transform v0.0.0-20201103190739-32f242e2dbde // indirect
 	golang.org/x/mod v0.41.0 // indirect
-	golang.org/x/net v0.58.0 // indirect
+	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
