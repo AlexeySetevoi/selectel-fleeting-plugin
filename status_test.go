@@ -19,10 +19,10 @@ func TestMapStatus(t *testing.T) {
 		"MIGRATING":    provider.StateRunning,
 		"DELETED":      provider.StateDeleting,
 		"SOFT_DELETED": provider.StateDeleting,
-		"SHUTOFF":      provider.StateTimeout,
-		"EXPIRED":      provider.StateTimeout,
-		"ERROR":        provider.StateTimeout,
-		"SHELVED":      provider.StateTimeout,
+		"SHUTOFF":      provider.StateDeleting,
+		"EXPIRED":      provider.StateDeleting,
+		"ERROR":        provider.StateDeleting,
+		"SHELVED":      provider.StateDeleting,
 	}
 
 	for status, want := range tests {
@@ -39,8 +39,8 @@ func TestMapStatus(t *testing.T) {
 	}
 }
 
-// Статус, добавленный в список, должен попасть и в MapStatus, а не молча
-// пропускаться в Update. UNKNOWN пропускается намеренно.
+// Статус, добавленный в список, должен попасть и в MapStatus. UNKNOWN не
+// сопоставлен намеренно, Update держит его как creating.
 func TestMapStatusCoversAllStatuses(t *testing.T) {
 	for _, status := range selectelapi.AllStatuses {
 		if status == selectelapi.StatusUnknown {
@@ -48,6 +48,28 @@ func TestMapStatusCoversAllStatuses(t *testing.T) {
 		}
 		if _, ok := MapStatus(status); !ok {
 			t.Errorf("server status %s is not mapped", status)
+		}
+	}
+}
+
+// timeout taskscaler забывает без Decrease — его не отдаём ни для какого статуса.
+func TestMapStatusNeverTimeout(t *testing.T) {
+	for _, status := range selectelapi.AllStatuses {
+		if state, _ := MapStatus(status); state == provider.StateTimeout {
+			t.Errorf("MapStatus(%s) = timeout", status)
+		}
+	}
+}
+
+func TestBroken(t *testing.T) {
+	for _, status := range []string{"ERROR", "SHUTOFF", "EXPIRED", "SHELVED", "SHELVED_OFFLOADED", "SUSPENDED", "PAUSED", "RESCUE"} {
+		if !Broken(status) {
+			t.Errorf("Broken(%s) = false", status)
+		}
+	}
+	for _, status := range []string{"ACTIVE", "BUILD", "REBOOT", "DELETED", "UNKNOWN"} {
+		if Broken(status) {
+			t.Errorf("Broken(%s) = true", status)
 		}
 	}
 }

@@ -342,7 +342,10 @@ func TestUpdateFiltersByMetadata(t *testing.T) {
 	want := map[string]provider.State{
 		"a": provider.StateRunning,
 		"b": provider.StateCreating,
-		"f": provider.StateTimeout,
+		// незнакомый статус остаётся в учёте
+		"e": provider.StateCreating,
+		// сломанный удаляем сами
+		"f": provider.StateDeleting,
 	}
 	if len(got) != len(want) {
 		t.Fatalf("Update() reported %v, want %v", got, want)
@@ -351,6 +354,63 @@ func TestUpdateFiltersByMetadata(t *testing.T) {
 		if got[id] != state {
 			t.Fatalf("Update() state[%s] = %q, want %q", id, got[id], state)
 		}
+	}
+	if len(fake.deleted) != 1 || fake.deleted[0] != "f" {
+		t.Fatalf("deleted = %v, want [f]", fake.deleted)
+	}
+}
+
+// Сломанный сервер Update удаляет сам и повторяет не чаще brokenDeleteRetry,
+// пока Nova его не уберёт; ошибка удаления Update не валит.
+func TestUpdateDeletesBrokenInstances(t *testing.T) {
+	now := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
+	fake := newFake()
+	fake.instances = []selectelapi.Instance{
+		{ID: "err", Status: selectelapi.StatusError, Metadata: map[string]string{metadataGroup: "runner"}},
+		{ID: "fail", Status: selectelapi.StatusShutoff, Metadata: map[string]string{metadataGroup: "runner"}},
+		{ID: "ok", Status: selectelapi.StatusActive, Metadata: map[string]string{metadataGroup: "runner"}},
+	}
+	fake.deleteErr = map[string]error{"fail": errors.New("internal error")}
+
+	g := validGroup()
+	g.now = func() time.Time { return now }
+	initGroup(t, g, fake, provider.Settings{})
+
+	update := func() map[string]provider.State {
+		t.Helper()
+		got := map[string]provider.State{}
+		if err := g.Update(context.Background(), func(id string, state provider.State) { got[id] = state }); err != nil {
+			t.Fatalf("Update() = %v", err)
+		}
+		return got
+	}
+
+	got := update()
+	if got["err"] != provider.StateDeleting || got["fail"] != provider.StateDeleting || got["ok"] != provider.StateRunning {
+		t.Fatalf("Update() = %v", got)
+	}
+	if !slices.Equal(fake.deleted, []string{"err"}) {
+		t.Fatalf("deleted = %v, want [err]", fake.deleted)
+	}
+
+	now = now.Add(brokenDeleteRetry / 2)
+	update()
+	if len(fake.deleted) != 1 {
+		t.Fatalf("deleted again before retry interval: %v", fake.deleted)
+	}
+
+	delete(fake.deleteErr, "fail")
+	now = now.Add(brokenDeleteRetry)
+	update()
+	if !slices.Equal(fake.deleted, []string{"err", "err", "fail"}) {
+		t.Fatalf("deleted = %v, want [err err fail]", fake.deleted)
+	}
+
+	// сервер ушёл — учёт по нему забыт
+	fake.instances = fake.instances[2:]
+	update()
+	if len(g.brokenDeletes) != 0 {
+		t.Fatalf("brokenDeletes = %v, want empty", g.brokenDeletes)
 	}
 }
 
